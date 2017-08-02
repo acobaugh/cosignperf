@@ -202,6 +202,7 @@ func worker(w int, requestc <-chan request, resultc chan<- result) {
 			}
 		}
 
+		conn.Write([]byte("QUIT\r\n"))
 		conn.Close()
 
 		// FIXME: there has to be a more elegant way to handle errors

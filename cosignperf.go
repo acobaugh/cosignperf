@@ -47,6 +47,9 @@ func (Args) Version() string {
 func main() {
 	var args Args
 	args.SslSkipVerify = false
+	args.Port = 6663
+	args.Hostname = "localhost"
+	args.Command = "NOOP"
 	arg.MustParse(&args)
 
 	// load our key and cert

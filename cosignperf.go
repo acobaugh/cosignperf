@@ -14,13 +14,14 @@ import (
 )
 
 type Args struct {
-	KeyFile    string `arg:"-k,required"`
-	CertFile   string `arg:"-c,required"`
-	Iterations int    `arg:"-i,required,help:# of commands to issue per thread"`
-	Threads    int    `arg:"-t,required,help:# of threads/clients to create"`
-	Hostname   string `arg:"-H,required"`
-	Port       int    `arg:"-P,required"`
-	Command    string `arg:"-C,required:cosign command to issue"`
+	KeyFile       string `arg:"-k,required"`
+	CertFile      string `arg:"-c,required"`
+	Iterations    int    `arg:"-i,required,help:# of commands to issue per thread"`
+	Threads       int    `arg:"-t,required,help:# of threads/clients to create"`
+	Hostname      string `arg:"-H,required"`
+	Port          int    `arg:"-P,required"`
+	Command       string `arg:"-C,required:cosign command to issue"`
+	SslSkipVerify bool   `arg:"help:Disable SSL verification when doing STARTTLS"`
 }
 
 type durations []time.Duration
@@ -45,6 +46,7 @@ func (Args) Version() string {
 
 func main() {
 	var args Args
+	args.SslSkipVerify = false
 	arg.MustParse(&args)
 
 	// load our key and cert
@@ -55,7 +57,7 @@ func main() {
 
 	// create tls config
 	tlsconfig := &tls.Config{
-		InsecureSkipVerify: false,
+		InsecureSkipVerify: args.SslSkipVerify,
 		ServerName:         args.Hostname,
 		Certificates:       []tls.Certificate{clientcert},
 	}

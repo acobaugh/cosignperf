@@ -20,6 +20,7 @@ type Args struct {
 	Parallelism int    `arg:"-p,required"`
 	Hostname    string `arg:"-H,required"`
 	Port        int    `arg:"-P,required"`
+	Command     string `arg:"-C,required"`
 }
 
 type durations []time.Duration
@@ -28,11 +29,12 @@ type request struct {
 	tlsconfig *tls.Config
 	hostname  string
 	port      int
+	command   string
 }
 
 type result struct {
 	success bool
-	err     error
+	status  string
 	elapsed time.Duration
 }
 
@@ -68,7 +70,7 @@ func main() {
 	// submit jobs
 	start := time.Now()
 	for i := 1; i <= args.Iterations; i++ {
-		requestc <- request{tlsconfig: tlsconfig, hostname: args.Hostname, port: int(args.Port)}
+		requestc <- request{tlsconfig: tlsconfig, hostname: args.Hostname, port: int(args.Port), command: args.Command}
 	}
 
 	// collect results
@@ -81,7 +83,7 @@ func main() {
 			s = append(s, r.elapsed)
 		} else {
 			f = append(f, r.elapsed)
-			//errors[r.err.Error()]++
+			errors[r.status]++
 		}
 	}
 	elapsed := time.Since(start)
@@ -152,9 +154,6 @@ func worker(w int, requestc <-chan request, resultc chan<- result) {
 		} else {
 			message, _ := bufio.NewReader(conn).ReadString('\n')
 			if strings.HasPrefix(message, "220 ") {
-				status = fmt.Sprintf("SUCCESS %s", message)
-				success = true
-
 				// ask to STARTTLS
 				conn.Write([]byte("STARTTLS 2\r\n"))
 				message, _ = bufio.NewReader(conn).ReadString('\n')
@@ -162,23 +161,26 @@ func worker(w int, requestc <-chan request, resultc chan<- result) {
 					// create new tls Conn and do tls handshake
 					tlsconn := tls.Client(conn, r.tlsconfig)
 					err = tlsconn.Handshake()
+					message, _ = bufio.NewReader(tlsconn).ReadString('\n') // need to read cosignd's response
 					if err == nil {
-						// send NOOP command
-						tlsconn.Write([]byte("NOOP\r\n"))
-						message, _ = bufio.NewReader(conn).ReadString('\n')
-						if strings.HasPrefix(message, "220 ") {
-							status = fmt.Sprintf("NOOP SUCCESS %s", message)
+						// send command
+						tlsconn.Write([]byte(r.command + "\r\n"))
+						message, _ = bufio.NewReader(tlsconn).ReadString('\n')
+						resp := strings.SplitN(message, " ", 2)
+						switch resp[0] {
+						case "220", "231", "232", "533", "534", "431", "432", "250":
+							status = fmt.Sprintf("SUCCESS %s", message)
 							success = true
-						} else {
-							status = fmt.Sprint("NOOP FAIL %s", message)
+						default:
+							status = fmt.Sprintf("FAILRESPONSE %s", message)
 							success = false
 						}
 					} else {
-						status = fmt.Sprintf("STARTTLS FAIL %s", err)
+						status = fmt.Sprintf("HANDSHAKE FAIL %s", err)
 						success = false
 					}
 				} else {
-					status = fmt.Sprintf("STARTTLS FAIL %s", message)
+					status = message
 					success = false
 				}
 			} else {
@@ -193,7 +195,7 @@ func worker(w int, requestc <-chan request, resultc chan<- result) {
 
 		resultc <- result{
 			success: success,
-			err:     err,
+			status:  status,
 			elapsed: elapsed,
 		}
 	}

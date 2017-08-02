@@ -14,24 +14,23 @@ import (
 )
 
 type Args struct {
-	KeyFile     string `arg:"-k,required"`
-	CertFile    string `arg:"-c,required"`
-	Iterations  int    `arg:"-i,required"`
-	Parallelism int    `arg:"-p,required"`
-	Hostname    string `arg:"-H,required"`
-	Port        int    `arg:"-P,required"`
-	Command     string `arg:"-C,required"`
-	Count       int    `arg:"-n,required"`
+	KeyFile    string `arg:"-k,required"`
+	CertFile   string `arg:"-c,required"`
+	Iterations int    `arg:"-i,required,help:# of commands to issue per thread"`
+	Threads    int    `arg:"-t,required,help:# of threads/clients to create"`
+	Hostname   string `arg:"-H,required"`
+	Port       int    `arg:"-P,required"`
+	Command    string `arg:"-C,required:cosign command to issue"`
 }
 
 type durations []time.Duration
 
 type request struct {
-	tlsconfig *tls.Config
-	hostname  string
-	port      int
-	command   string
-	count     int
+	tlsconfig  *tls.Config
+	hostname   string
+	port       int
+	command    string
+	iterations int
 }
 
 type result struct {
@@ -61,25 +60,25 @@ func main() {
 		Certificates:       []tls.Certificate{clientcert},
 	}
 
-	requestc := make(chan request, args.Iterations)
-	resultc := make(chan result, args.Iterations)
+	requestc := make(chan request, args.Threads)
+	resultc := make(chan result, args.Threads*args.Iterations)
 
 	// create workers
-	for i := 1; i <= args.Parallelism; i++ {
+	for i := 1; i <= args.Threads; i++ {
 		go worker(i, requestc, resultc)
 	}
 
 	// submit jobs
 	start := time.Now()
-	for i := 1; i <= args.Iterations; i++ {
-		requestc <- request{tlsconfig: tlsconfig, hostname: args.Hostname, port: int(args.Port), command: args.Command, count: args.Count}
+	for i := 1; i <= args.Threads; i++ {
+		requestc <- request{tlsconfig: tlsconfig, hostname: args.Hostname, port: int(args.Port), command: args.Command, iterations: args.Iterations}
 	}
 
 	// collect results
 	var s durations
 	var f durations
 	var errors = make(map[string]int)
-	for i := 1; i <= (args.Iterations * args.Count); i++ {
+	for i := 1; i <= (args.Iterations * args.Threads); i++ {
 		r := <-resultc
 		if r.success {
 			s = append(s, r.elapsed)
@@ -98,13 +97,13 @@ func main() {
 	fmt.Printf("\n===========\n"+
 		"Total elapsed time: %s\n"+
 		"Average req/s: %.2f\n"+
-		"Parallelism: %d, SUCCESS/FAIL: %d/%d\n"+
+		"Threads: %d, Commands/thread: %d, SUCCESS/FAIL: %d/%d\n"+
 		"SUCCESS: avg: %s, max: %s, min: %s, 99pct: %s, 95pct: %s\n"+
 		"FAIL: avg: %s, max: %s, min: %s, 99pct: %s, 95pct: %s\n"+
 		"Errors:\n%s",
 		elapsed,
-		float64(args.Iterations*args.Count)/elapsed.Seconds(),
-		args.Parallelism, len(s), len(f),
+		float64(args.Iterations*args.Threads)/elapsed.Seconds(),
+		args.Threads, args.Iterations, len(s), len(f),
 		s.dstat(stats.Mean), s.dstat(stats.Max), s.dstat(stats.Min), s.dpct(stats.Percentile, 99), s.dpct(stats.Percentile, 95),
 		f.dstat(stats.Mean), f.dstat(stats.Max), f.dstat(stats.Min), f.dpct(stats.Percentile, 99), f.dpct(stats.Percentile, 95),
 		error_report,
@@ -165,7 +164,7 @@ func worker(w int, requestc <-chan request, resultc chan<- result) {
 					err = tlsconn.Handshake()
 					message, _ = bufio.NewReader(tlsconn).ReadString('\n') // need to read cosignd's response to the starttls
 					if err == nil {
-						for i := 1; i <= r.count; i++ {
+						for i := 1; i <= r.iterations; i++ {
 							// send command
 							tlsconn.Write([]byte(r.command + "\r\n"))
 							message, _ = bufio.NewReader(tlsconn).ReadString('\n')

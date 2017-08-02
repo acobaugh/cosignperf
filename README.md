@@ -17,4 +17,4 @@ $ go build
 * quiet/verbose output
 * generic cosign comm handler function to simplify some of the nested if/else logic
 * delays between jobs/commands
-* ability to issue more than one command per connection to better simulate normal filter operation
+* iterations, parallelism, and count don't translate well into what we're actually doing. come up with better terms (threads and queue depth?)

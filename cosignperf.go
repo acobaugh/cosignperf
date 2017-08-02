@@ -21,6 +21,7 @@ type Args struct {
 	Hostname    string `arg:"-H,required"`
 	Port        int    `arg:"-P,required"`
 	Command     string `arg:"-C,required"`
+	Count       int    `arg:"-n,required"`
 }
 
 type durations []time.Duration
@@ -30,6 +31,7 @@ type request struct {
 	hostname  string
 	port      int
 	command   string
+	count     int
 }
 
 type result struct {
@@ -70,14 +72,14 @@ func main() {
 	// submit jobs
 	start := time.Now()
 	for i := 1; i <= args.Iterations; i++ {
-		requestc <- request{tlsconfig: tlsconfig, hostname: args.Hostname, port: int(args.Port), command: args.Command}
+		requestc <- request{tlsconfig: tlsconfig, hostname: args.Hostname, port: int(args.Port), command: args.Command, count: args.Count}
 	}
 
 	// collect results
 	var s durations
 	var f durations
 	var errors = make(map[string]int)
-	for i := 1; i <= args.Iterations; i++ {
+	for i := 1; i <= (args.Iterations * args.Count); i++ {
 		r := <-resultc
 		if r.success {
 			s = append(s, r.elapsed)
@@ -101,7 +103,7 @@ func main() {
 		"FAIL: avg: %s, max: %s, min: %s, 99pct: %s, 95pct: %s\n"+
 		"Errors:\n%s",
 		elapsed,
-		float64(args.Iterations)/elapsed.Seconds(),
+		float64(args.Iterations*args.Count)/elapsed.Seconds(),
 		args.Parallelism, len(s), len(f),
 		s.dstat(stats.Mean), s.dstat(stats.Max), s.dstat(stats.Min), s.dpct(stats.Percentile, 99), s.dpct(stats.Percentile, 95),
 		f.dstat(stats.Mean), f.dstat(stats.Max), f.dstat(stats.Min), f.dpct(stats.Percentile, 99), f.dpct(stats.Percentile, 95),
@@ -161,19 +163,30 @@ func worker(w int, requestc <-chan request, resultc chan<- result) {
 					// create new tls Conn and do tls handshake
 					tlsconn := tls.Client(conn, r.tlsconfig)
 					err = tlsconn.Handshake()
-					message, _ = bufio.NewReader(tlsconn).ReadString('\n') // need to read cosignd's response
+					message, _ = bufio.NewReader(tlsconn).ReadString('\n') // need to read cosignd's response to the starttls
 					if err == nil {
-						// send command
-						tlsconn.Write([]byte(r.command + "\r\n"))
-						message, _ = bufio.NewReader(tlsconn).ReadString('\n')
-						resp := strings.SplitN(message, " ", 2)
-						switch resp[0] {
-						case "220", "231", "232", "533", "534", "431", "432", "250":
-							status = fmt.Sprintf("SUCCESS %s", message)
-							success = true
-						default:
-							status = fmt.Sprintf("FAILRESPONSE %s", message)
-							success = false
+						for i := 1; i <= r.count; i++ {
+							// send command
+							tlsconn.Write([]byte(r.command + "\r\n"))
+							message, _ = bufio.NewReader(tlsconn).ReadString('\n')
+							resp := strings.SplitN(message, " ", 2)
+							switch resp[0] {
+							case "220", "231", "232", "533", "534", "431", "432", "250":
+								status = fmt.Sprintf("SUCCESS %s", message)
+								success = true
+							default:
+								status = fmt.Sprintf("FAILRESPONSE %s", message)
+								success = false
+							}
+							// more commands to follow, so report our result
+							elapsed := time.Since(start)
+							log.Printf("[%d:%d] %s %s", w, i, elapsed, status)
+							resultc <- result{
+								success: success,
+								status:  status,
+								elapsed: elapsed,
+							}
+							start = time.Now()
 						}
 					} else {
 						status = fmt.Sprintf("HANDSHAKE FAIL %s", err)
@@ -190,13 +203,17 @@ func worker(w int, requestc <-chan request, resultc chan<- result) {
 		}
 
 		conn.Close()
-		elapsed := time.Since(start)
-		log.Printf("%s %s", elapsed, status)
 
-		resultc <- result{
-			success: success,
-			status:  status,
-			elapsed: elapsed,
+		// FIXME: there has to be a more elegant way to handle errors
+		if !success {
+			elapsed := time.Since(start)
+			log.Printf("[%d] %s %s", w, elapsed, status)
+
+			resultc <- result{
+				success: success,
+				status:  status,
+				elapsed: elapsed,
+			}
 		}
 	}
 }

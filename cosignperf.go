@@ -22,16 +22,14 @@ type Args struct {
 	Port          int    `arg:"-P,required"`
 	Command       string `arg:"-C,required:cosign command to issue"`
 	SslSkipVerify bool   `arg:"help:Disable SSL verification when doing STARTTLS"`
+	Quiet         bool   `arg:"-q,help:Suppress output and only provide summary"`
 }
 
 type durations []time.Duration
 
 type request struct {
-	tlsconfig  *tls.Config
-	hostname   string
-	port       int
-	command    string
-	iterations int
+	tlsconfig *tls.Config
+	args      Args
 }
 
 type result struct {
@@ -76,7 +74,7 @@ func main() {
 	// submit jobs
 	start := time.Now()
 	for i := 1; i <= args.Threads; i++ {
-		requestc <- request{tlsconfig: tlsconfig, hostname: args.Hostname, port: int(args.Port), command: args.Command, iterations: args.Iterations}
+		requestc <- request{tlsconfig: tlsconfig, args: args}
 	}
 
 	// collect results
@@ -152,7 +150,7 @@ func worker(w int, requestc <-chan request, resultc chan<- result) {
 		start := time.Now()
 
 		// connect
-		conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", r.hostname, r.port))
+		conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", r.args.Hostname, r.args.Port))
 		if err != nil {
 			status = fmt.Sprintf("NOCONN %s", err)
 			success = false
@@ -169,9 +167,9 @@ func worker(w int, requestc <-chan request, resultc chan<- result) {
 					err = tlsconn.Handshake()
 					message, _ = bufio.NewReader(tlsconn).ReadString('\n') // need to read cosignd's response to the starttls
 					if err == nil {
-						for i := 1; i <= r.iterations; i++ {
+						for i := 1; i <= r.args.Iterations; i++ {
 							// send command
-							tlsconn.Write([]byte(r.command + "\r\n"))
+							tlsconn.Write([]byte(r.args.Command + "\r\n"))
 							message, _ = bufio.NewReader(tlsconn).ReadString('\n')
 							resp := strings.SplitN(message, " ", 2)
 							switch resp[0] {
@@ -184,7 +182,9 @@ func worker(w int, requestc <-chan request, resultc chan<- result) {
 							}
 							// more commands to follow, so report our result
 							elapsed := time.Since(start)
-							log.Printf("[%d:%d] %s %s", w, i, elapsed, status)
+							if !r.args.Quiet {
+								log.Printf("[%d:%d] %s %s", w, i, elapsed, status)
+							}
 							resultc <- result{
 								success: success,
 								status:  status,
@@ -212,7 +212,9 @@ func worker(w int, requestc <-chan request, resultc chan<- result) {
 		// FIXME: there has to be a more elegant way to handle errors
 		if !success {
 			elapsed := time.Since(start)
-			log.Printf("[%d] %s %s", w, elapsed, status)
+			if !r.args.Quiet {
+				log.Printf("[%d] %s %s", w, elapsed, status)
+			}
 
 			resultc <- result{
 				success: success,
